@@ -5,3 +5,4 @@ pgeocode~=0.5.0
 python-dotenv~=1.0.1
 geopy~=2.4.1
 torch~=2.4.0
+openpyxl~=3.1.0
