@@ -38,8 +38,8 @@ ZONE_MAPPING = {
     10: "Hawaii (Oahu island only)",
 }
 
-# Define Install Types that should have zone costs applied
-INSTALL_TYPES_WITH_ZONE_COSTS = [
+# Define default install types that should have zone costs applied.
+DEFAULT_ZONE_COST_INSTALL_TYPES = [
     "CoreNew Install",
     "HubPremier New Install",
     "DobbyLockersPremier New Install",
@@ -47,7 +47,7 @@ INSTALL_TYPES_WITH_ZONE_COSTS = [
     "HubReinstall",
 ]
 
-# Define base costs for other install types (default values)
+# Define base costs for install types (default values)
 BASE_COSTS = {
     "CoreDownsize": 150.00,
     "CorePermanent Removal": 100.00,
@@ -66,48 +66,60 @@ BASE_COSTS = {
     "HubTemporary Removal": 75.00,
     "DobbyLockersUpsize": 150.00,
     "HubSvc Call": 125.00,
-    " ": 0.00,
+    # " ": 0.00,
 }
 
 
-def calculate_cost(zone: int, install_type: str, base_costs: dict) -> float:
+def calculate_cost(
+    zone: int, install_type: str, base_costs: dict, zone_cost_install_types: list
+) -> float:
     """
     Calculate the cost based on the zone and install type.
 
-    Args:
-        zone: Numeric zone value.
-        install_type: Type of installation.
-        base_costs: Dictionary of base costs.
-
-    Returns:
-        Calculated cost as a float.
+    If the install type is in the zone cost list, then the zone rate is used.
+    Otherwise, the base cost is used.
     """
     if pd.isna(zone):
         return 0.0
 
-    # For install types that should use zone-based pricing.
-    if install_type in INSTALL_TYPES_WITH_ZONE_COSTS:
+    if install_type in zone_cost_install_types:
         return ZONE_RATES.get(zone, 0.0)
-
-    # Otherwise, return the base cost for the install type.
     return base_costs.get(install_type, 0.0)
 
 
-def get_base_costs() -> dict:
+def get_zone_cost_install_types() -> list:
     """
-    Display number inputs in the sidebar to allow user customization
-    of base costs. Default values are taken from the BASE_COSTS dict.
-    The inputs are arranged in two columns.
+    Display a multiselect in the sidebar so the user can choose which install types
+    should use the zone-based rates. The default selection is DEFAULT_ZONE_COST_INSTALL_TYPES.
+    """
+    # Use the union of install types from BASE_COSTS and DEFAULT_ZONE_COST_INSTALL_TYPES.
+    all_install_types = sorted(
+        set(list(BASE_COSTS.keys()) + DEFAULT_ZONE_COST_INSTALL_TYPES)
+    )
+    return st.sidebar.multiselect(
+        "Select Install Types to use Zone Rates",
+        options=all_install_types,
+        default=DEFAULT_ZONE_COST_INSTALL_TYPES,
+    )
 
-    Returns:
-        A dictionary of updated base costs.
+
+def get_base_costs(zone_cost_install_types: list) -> dict:
+    """
+    Display number inputs in the sidebar to allow user customization of base costs.
+    Only install types not selected for zone rates are displayed.
+    The inputs are arranged in two columns.
     """
     st.sidebar.markdown("### Customize Base Costs")
     updated_costs = {}
-    # Create two columns within the sidebar
     cols = st.sidebar.columns(2)
-    # Iterate over the BASE_COSTS items, alternating between columns.
-    for i, (install_type, default_cost) in enumerate(BASE_COSTS.items()):
+    # Use the union of all known install types.
+    all_install_types = sorted(
+        set(list(BASE_COSTS.keys()) + DEFAULT_ZONE_COST_INSTALL_TYPES)
+    )
+    for i, install_type in enumerate(all_install_types):
+        if install_type in zone_cost_install_types:
+            continue
+        default_cost = BASE_COSTS.get(install_type, 0.0)
         col = cols[i % 2]
         updated_costs[install_type] = col.number_input(
             f"{install_type}", value=default_cost, step=1.0, format="%.2f"
@@ -152,7 +164,6 @@ def assign_zone(distance: float, zip_code: str, geo_locator: GeoLocator) -> int:
     if pd.isna(distance):
         return np.nan
 
-    # Assign zone based on distance ranges.
     if 0 <= distance <= 100:
         return 1
     elif 101 <= distance <= 200:
@@ -293,7 +304,10 @@ def main():
     """Main application logic."""
     origin_zip, uploaded_file = get_sidebar_inputs()
     geo_locator = GeoLocator()
-    base_costs = get_base_costs()  # Get updated base costs from user input
+    # Let the user choose which install types use zone rates.
+    zone_cost_install_types = get_zone_cost_install_types()
+    # Get updated base costs for install types not using zone rates.
+    base_costs = get_base_costs(zone_cost_install_types)
 
     if not uploaded_file:
         return
@@ -318,19 +332,21 @@ def main():
         df, zip_col, output_col, origin_lat, origin_lon, geo_locator
     )
 
-    # Assign zones based on the calculated distance and zip code information
+    # Assign zones based on the calculated distance and zip code information.
     df[ZONE_COL_NAME] = df.apply(
         lambda row: assign_zone(row[output_col], row[zip_col], geo_locator), axis=1
     )
 
-    # Calculate the total cost based on the zone and install type using user-defined base costs
+    # Calculate total cost using updated settings.
     df["Total Cost"] = df.apply(
-        lambda row: calculate_cost(row[ZONE_COL_NAME], row["Install Type"], base_costs),
+        lambda row: calculate_cost(
+            row[ZONE_COL_NAME], row["Install Type"], base_costs, zone_cost_install_types
+        ),
         axis=1,
     )
 
     total_cost = df["Total Cost"].sum()
-    st.write(f"Total Cost: ${total_cost:,.2f}")
+    st.write(f"#### Total Cost: ${total_cost:,.2f}")
 
     st.write("### Cost Breakdown by Zone and Install Type")
     zone_summary = (
@@ -340,6 +356,7 @@ def main():
     )
     zone_summary.columns = ["Zone", "Install Type", "Count", "Total Cost"]
     zone_summary["Zone Description"] = zone_summary["Zone"].map(ZONE_MAPPING)
+
     st.dataframe(zone_summary)
 
     st.write("### Summary by Install Type")
