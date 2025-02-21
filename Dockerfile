@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone https://github.com/jamesbmour/BMAY_Pricing_Calc.git .
-COPY . .
+# COPY . .
 
 RUN pip3 install --upgrade pip
 
