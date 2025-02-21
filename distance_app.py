@@ -3,119 +3,167 @@ import pandas as pd
 import numpy as np
 import pgeocode
 import io
+from typing import Tuple, Optional
 
-st.set_page_config(layout="wide")
-st.title("Zip Code Distance Calculator")
-st.write(
-    """
-    Upload an Excel file that contains your data.
-    The app will calculate the distance from each zip code (using only the first 5 digits if needed)
-    to the origin zip code you specify, then display the results and provide a download link.
-    """
-)
-
-# Sidebar options
-st.sidebar.header("Options")
-origin_zip = st.sidebar.text_input("Enter Origin Zip Code", "45241")
-uploaded_file = st.sidebar.file_uploader("Choose an Excel file", type=["xlsx"])
+# Constants
+EARTH_RADIUS_MILES = 3956
+DISTANCE_COL_NAME = "Distance"
 
 
-def haversine(lat1, lon1, lat2, lon2):
+class GeoLocator:
+    """Handles geolocation lookups using pgeocode."""
+
+    def __init__(self, country: str = "us"):
+        self.nomi = pgeocode.Nominatim(country)
+
+    def get_coordinates(self, zip_code: str) -> Tuple[float, float]:
+        """Get latitude and longitude for a given zip code."""
+        location = self.nomi.query_postal_code(str(zip_code))
+        return location.latitude, location.longitude
+
+
+def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate the Haversine distance (in miles) between two points on Earth."""
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
-    c = 2 * np.arcsin(np.sqrt(a))
-    r = 3956  # Earth's radius in miles
-    return c * r
+    return 2 * EARTH_RADIUS_MILES * np.arcsin(np.sqrt(a))
 
 
-def get_distance(zip_code, origin_lat, origin_lon, nomi):
-    """Extract the first 5 digits of the zip code, look up its location, and calculate the distance."""
-    zip_str = str(zip_code)
-    zip_clean = zip_str.split("-")[0].strip()  # Use first 5 digits
-    info = nomi.query_postal_code(zip_clean)
-    if np.isnan(info.latitude) or np.isnan(info.longitude):
-        return np.nan
-    return haversine(origin_lat, origin_lon, info.latitude, info.longitude)
+def get_sidebar_inputs() -> Tuple[str, Optional[io.BytesIO]]:
+    """Create sidebar inputs and return values."""
+    st.sidebar.header("Options")
+    return (
+        st.sidebar.text_input("Enter Origin Zip Code", "45241"),
+        st.sidebar.file_uploader("Choose an Excel file", type=["xlsx"]),
+    )
 
 
-if uploaded_file is not None:
-    try:
-        df = pd.read_excel(uploaded_file)
-        # Replace blank strings (including spaces) with NaN and then drop rows that are completely empty
-        df.replace(r"^\s*$", np.nan, regex=True, inplace=True)
-        df.dropna(how="all", inplace=True)
-    except Exception as e:
-        st.error(f"Error reading the Excel file: {e}")
-    else:
-        # Allow selection of the column that contains the zip codes from available columns
-        default_zip_col = "Zip" if "Zip" in df.columns else df.columns[0]
-        zip_input_col = st.sidebar.selectbox(
-            "Select the column for zip codes",
-            options=df.columns,
-            index=list(df.columns).index(default_zip_col),
-        )
+def read_excel_data(file: io.BytesIO) -> pd.DataFrame:
+    """Read and clean Excel data."""
+    df = pd.read_excel(file)
+    df.replace(r"^\s*$", np.nan, regex=True, inplace=True)
+    return df.dropna(how="all")
 
-        # Allow selection for the output column for distances; include existing columns and add "Distance" if needed.
-        output_options = list(df.columns)
-        if "Distance" not in output_options:
-            output_options.append("Distance")
-        default_distance_index = (
-            output_options.index("Distance") if "Distance" in output_options else 0
-        )
-        distance_output_col = st.sidebar.selectbox(
+
+def select_columns(df: pd.DataFrame) -> Tuple[str, str]:
+    """Column selection widgets for zip codes and output column."""
+    default_zip = "Zip" if "Zip" in df.columns else df.columns[0]
+    zip_col = st.sidebar.selectbox(
+        "Select the column for zip codes",
+        df.columns,
+        index=list(df.columns).index(default_zip),
+    )
+
+    output_cols = list(df.columns)
+    if DISTANCE_COL_NAME not in output_cols:
+        output_cols.append(DISTANCE_COL_NAME)
+
+    return (
+        zip_col,
+        st.sidebar.selectbox(
             "Select the output column for distances",
-            options=output_options,
-            index=default_distance_index,
-        )
-
-        # Initialize pgeocode for US zip codes
-        nomi = pgeocode.Nominatim("us")
-        origin_info = nomi.query_postal_code(origin_zip)
-        origin_lat = origin_info.latitude
-        origin_lon = origin_info.longitude
-
-        if np.isnan(origin_lat) or np.isnan(origin_lon):
-            st.error(
-                "Invalid origin zip code. Please enter a valid US zip code in the sidebar."
-            )
-        else:
-            # Calculate the distance for each zip code using the selected column
-            df[distance_output_col] = df[zip_input_col].apply(
-                lambda z: get_distance(z, origin_lat, origin_lon, nomi)
-            )
-
-            # Count and display the number of NaN values in the output distance column
-            nan_count = df[distance_output_col].isna().sum()
-            st.write(
-                f"Number of NaN values in '{distance_output_col}' column: {nan_count}"
-            )
-            st.dataframe(df)
-            # Prepare the DataFrame for download as an Excel file
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="Results")
-            processed_data = output.getvalue()
-
-            st.download_button(
-                label="Download Results as Excel",
-                data=processed_data,
-                file_name="output_with_distances.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            # Display a warning section for rows with missing (NaN) distance values,
-            # with the zip code and distance columns moved to the front.
-            if nan_count > 0:
-                st.warning("The following rows have missing (NaN) distance values:")
-                nan_df = df[df[distance_output_col].isna()]
-                cols_order = [zip_input_col, distance_output_col] + [
-                    col
-                    for col in nan_df.columns
-                    if col not in [zip_input_col, distance_output_col]
-                ]
-                st.dataframe(nan_df[cols_order])
+            output_cols,
+            index=output_cols.index(DISTANCE_COL_NAME),
+        ),
+    )
 
 
-# thisFile
+def calculate_distances(
+    df: pd.DataFrame,
+    zip_col: str,
+    output_col: str,
+    origin_lat: float,
+    origin_lon: float,
+    geo_locator: GeoLocator,
+) -> pd.DataFrame:
+    """Calculate distances for all zip codes."""
+
+    def get_distance(zip_code: str) -> float:
+        clean_zip = str(zip_code).split("-")[0].strip()
+        lat, lon = geo_locator.get_coordinates(clean_zip)
+        return np.nan if np.isnan(lat) else haversine(origin_lat, origin_lon, lat, lon)
+
+    df[output_col] = df[zip_col].apply(get_distance)
+    return df
+
+
+def display_results(df: pd.DataFrame, output_col: str) -> int:
+    """Display results and return count of missing values."""
+    nan_count = df[output_col].isna().sum()
+    st.write(f"Number of NaN values in '{output_col}' column: {nan_count}")
+    st.dataframe(df)
+    return nan_count
+
+
+def create_download_link(df: pd.DataFrame) -> None:
+    """Create Excel download link."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    st.download_button(
+        label="Download Results as Excel",
+        data=output.getvalue(),
+        file_name="output_with_distances.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def show_missing_values(df: pd.DataFrame, output_col: str, zip_col: str) -> None:
+    """Display rows with missing distance values."""
+    nan_df = df[df[output_col].isna()]
+    if not nan_df.empty:
+        st.warning("The following rows have missing (NaN) distance values:")
+        cols = [zip_col, output_col] + [c for c in df if c not in {zip_col, output_col}]
+        st.dataframe(nan_df[cols])
+
+
+# Streamlit UI Configuration
+st.set_page_config(layout="wide")
+st.title("Zip Code Distance Calculator")
+st.write(
+    """
+    Upload an Excel file containing zip codes. The app will calculate distances
+    from each zip code to the origin zip code you specify. Results can be downloaded
+    as an Excel file.
+"""
+)
+
+
+def main():
+    """Main application logic."""
+    origin_zip, uploaded_file = get_sidebar_inputs()
+    geo_locator = GeoLocator()
+
+    if not uploaded_file:
+        return
+
+    try:
+        df = read_excel_data(uploaded_file)
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+        return
+
+    zip_col, output_col = select_columns(df)
+
+    try:
+        origin_lat, origin_lon = geo_locator.get_coordinates(origin_zip)
+        if np.isnan(origin_lat):
+            raise ValueError("Invalid origin zip code")
+    except ValueError as e:
+        st.error(str(e))
+        return
+
+    df = calculate_distances(
+        df, zip_col, output_col, origin_lat, origin_lon, geo_locator
+    )
+    nan_count = display_results(df, output_col)
+    create_download_link(df)
+
+    if nan_count > 0:
+        show_missing_values(df, output_col, zip_col)
+
+
+if __name__ == "__main__":
+    main()
