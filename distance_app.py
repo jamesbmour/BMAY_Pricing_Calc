@@ -10,6 +10,39 @@ EARTH_RADIUS_MILES = 3956
 DISTANCE_COL_NAME = "Distance"
 ZONE_COL_NAME = "Zone"
 
+# Define the rates for each zone with numeric keys
+ZONE_RATES = {
+    1: 249.04,  # Zone 1
+    2: 298.70,  # Zone 2
+    3: 379.34,  # Zone 3
+    4: 439.51,  # Zone 4
+    5: 497.19,  # Zone 5
+    6: 583.61,  # Zone 6
+    7: 672.34,  # Zone 7
+    8: 697.09,  # Zone 8
+    9: 810.00,  # Canada
+    10: 750.00,  # Hawaii
+}
+
+# Mapping between zone numbers and descriptions
+ZONE_MAPPING = {
+    1: "Zone 1 (0-100 miles)",
+    2: "Zone 2 (101-200 miles)",
+    3: "Zone 3 (201-400 miles)",
+    4: "Zone 4 (401-600 miles)",
+    5: "Zone 5 (601-1000 miles)",
+    6: "Zone 6 (1001-1400 miles)",
+    7: "Zone 7 (1401-1800 miles)",
+    8: "Zone 8 (1801-2500 miles)",
+    9: "Canada",
+    10: "Hawaii (Oahu island only)",
+}
+
+
+def calculate_cost(zone: int) -> float:
+    """Calculate the cost based on the numeric zone."""
+    return ZONE_RATES.get(zone, 0.0)
+
 
 class GeoLocator:
     """Handles geolocation lookups using pgeocode."""
@@ -32,47 +65,39 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * EARTH_RADIUS_MILES * np.arcsin(np.sqrt(a))
 
 
-def assign_zone(distance: float, zip_code: str, geo_locator: GeoLocator) -> str:
-    """
-    Assign a zone based on the distance and special cases for Canada and Hawaii.
-
-    The function first checks if the postal info indicates the location is in Hawaii
-    (by state_code 'HI') or if the zip code format suggests a Canadian postal code.
-    Otherwise, the zone is assigned based on the distance ranges.
-    """
-    # Clean the zip code (only consider first 5 digits for US codes)
+def assign_zone(distance: float, zip_code: str, geo_locator: GeoLocator) -> int:
+    """Assign a numeric zone based on the distance and special cases."""
     clean_zip = str(zip_code).split("-")[0].strip()
-    # Retrieve postal info for special cases
     postal_info = geo_locator.nomi.query_postal_code(clean_zip)
 
-    # Special case: Hawaii (check if state_code equals 'HI')
+    # Special case: Hawaii
     if pd.notna(postal_info.state_code) and postal_info.state_code == "HI":
-        return "Hawaii (Oahu island only)"
+        return 10
 
-    # Special case: Canada (naively, if the zip code is not numeric, assume Canadian)
+    # Special case: Canada
     if not clean_zip.isdigit() and len(clean_zip) >= 3:
-        return "Canada"
+        return 9
 
     if pd.isna(distance):
         return np.nan
 
-    # Assign zone based on distance ranges
+    # Assign numeric zone based on distance ranges
     if 0 <= distance <= 100:
-        return "Zone 1"
+        return 1
     elif 101 <= distance <= 200:
-        return "Zone 2"
+        return 2
     elif 201 <= distance <= 400:
-        return "Zone 3"
+        return 3
     elif 401 <= distance <= 600:
-        return "Zone 4"
+        return 4
     elif 601 <= distance <= 1000:
-        return "Zone 5"
+        return 5
     elif 1001 <= distance <= 1400:
-        return "Zone 6"
+        return 6
     elif 1401 <= distance <= 1800:
-        return "Zone 7"
+        return 7
     elif 1801 <= distance <= 2500:
-        return "Zone 8"
+        return 8
     else:
         return np.nan
 
@@ -101,9 +126,11 @@ def select_columns(df: pd.DataFrame) -> Tuple[str, str]:
         df.columns,
         index=list(df.columns).index(default_zip),
     )
+
     output_cols = list(df.columns)
     if DISTANCE_COL_NAME not in output_cols:
         output_cols.append(DISTANCE_COL_NAME)
+
     return (
         zip_col,
         st.sidebar.selectbox(
@@ -133,20 +160,30 @@ def calculate_distances(
     return df
 
 
-def display_results(df: pd.DataFrame, output_col: str, zip_col: str) -> int:
+def display_results(df: pd.DataFrame, priority_columns: list) -> int:
     """
-    Display results with the zip code, distance, and zone columns first.
-    Return the number of missing values in the output column.
-    """
-    # Reorder columns: zip_col, output_col (distance), ZONE_COL_NAME first.
-    cols_order = [zip_col, output_col, ZONE_COL_NAME] + [
-        col for col in df.columns if col not in {zip_col, output_col, ZONE_COL_NAME}
-    ]
-    df = df[cols_order]
+    Display results with specified columns first, followed by remaining columns.
 
-    nan_count = df[output_col].isna().sum()
-    st.write(f"Number of NaN values in `{output_col}` column: {nan_count}")
-    st.dataframe(df)
+    Args:
+        df: DataFrame to display
+        priority_columns: List of column names that should appear first
+
+    Returns:
+        int: Count of NaN values in the Distance column
+    """
+    # Validate priority columns exist in DataFrame
+    valid_priority_cols = [col for col in priority_columns if col in df.columns]
+
+    # Get remaining columns that aren't in priority list
+    remaining_cols = [col for col in df.columns if col not in valid_priority_cols]
+
+    # Reorder columns with priority columns first
+    ordered_cols = valid_priority_cols + remaining_cols
+    df_display = df[ordered_cols]
+
+    nan_count = df[DISTANCE_COL_NAME].isna().sum()
+    st.write(f"Number of NaN values in '{DISTANCE_COL_NAME}' column: {nan_count}")
+    st.dataframe(df_display)
     return nan_count
 
 
@@ -163,13 +200,20 @@ def create_download_link(df: pd.DataFrame) -> None:
     )
 
 
-def show_missing_values(df: pd.DataFrame, output_col: str, zip_col: str) -> None:
-    """Display rows with missing distance values."""
-    nan_df = df[df[output_col].isna()]
+def show_missing_values(df: pd.DataFrame, priority_columns: list) -> None:
+    """
+    Display rows with missing distance values.
+
+    Args:
+        df: DataFrame to display
+        priority_columns: List of column names that should appear first
+    """
+    nan_df = df[df[DISTANCE_COL_NAME].isna()]
     if not nan_df.empty:
         st.warning("The following rows have missing (NaN) distance values:")
-        cols = [zip_col, output_col] + [c for c in df if c not in {zip_col, output_col}]
-        st.dataframe(nan_df[cols])
+        valid_priority_cols = [col for col in priority_columns if col in df.columns]
+        remaining_cols = [col for col in df.columns if col not in valid_priority_cols]
+        st.dataframe(nan_df[valid_priority_cols + remaining_cols])
 
 
 # Streamlit UI Configuration
@@ -180,16 +224,16 @@ st.write(
     Upload an Excel file containing zip codes. The app will calculate distances
     from each zip code to the origin zip code you specify and assign a zone based on:
 
-    - Zone 1 (0-100 miles): $249.04  
-    - Zone 2 (101-200 miles): $298.70  
-    - Zone 3 (201-400 miles): $379.34  
-    - Zone 4 (401-600 miles): $439.51  
-    - Zone 5 (601-1000 miles): $497.19  
-    - Zone 6 (1001-1400 miles): $583.61  
-    - Zone 7 (1401-1800 miles): $672.34  
-    - Zone 8 (1801-2500 miles): $697.09  
-    - Canada: $810.00  
-    - Hawaii (Oahu island only): $750.00
+    - Zone 1 (0-100 miles): $249.04
+    - Zone 2 (101-200 miles): $298.70
+    - Zone 3 (201-400 miles): $379.34
+    - Zone 4 (401-600 miles): $439.51
+    - Zone 5 (601-1000 miles): $497.19
+    - Zone 6 (1001-1400 miles): $583.61
+    - Zone 7 (1401-1800 miles): $672.34
+    - Zone 8 (1801-2500 miles): $697.09
+    - Zone 9 (Canada): $810.00
+    - Zone 10 (Hawaii/Oahu): $750.00
     """
 )
 
@@ -222,18 +266,42 @@ def main():
         df, zip_col, output_col, origin_lat, origin_lon, geo_locator
     )
 
-    # Assign zones based on the calculated distance and zip code information.
+    # Assign zones based on the calculated distance and zip code information
     df[ZONE_COL_NAME] = df.apply(
-        lambda row: assign_zone(row[output_col], row[zip_col], geo_locator),
-        axis=1,
+        lambda row: assign_zone(row[output_col], row[zip_col], geo_locator), axis=1
     )
 
-    # Pass zip_col to display_results so that it can update the column order.
-    nan_count = display_results(df, output_col, zip_col)
+    # Calculate the total cost based on the zone
+    df["Total Cost"] = df[ZONE_COL_NAME].apply(calculate_cost)
+
+    # Display total cost summary
+    total_cost = df["Total Cost"].sum()
+    st.write(f"Total Cost: ${total_cost:,.2f}")
+
+    # Display detailed breakdown by zone
+    st.write("### Cost Breakdown by Zone")
+    zone_summary = (
+        df.groupby(ZONE_COL_NAME).agg({"Total Cost": ["count", "sum"]}).reset_index()
+    )
+    zone_summary.columns = ["Zone", "Count", "Total Cost"]
+    zone_summary["Zone Description"] = zone_summary["Zone"].map(ZONE_MAPPING)
+    st.dataframe(zone_summary)
+
+    # Define priority columns for display
+    priority_columns = [
+        zip_col,
+        DISTANCE_COL_NAME,
+        ZONE_COL_NAME,
+        "Total Cost",
+        "Install Type",  # Add any other columns you want to appear first
+    ]
+
+    # Display results with priority columns
+    nan_count = display_results(df, priority_columns)
     create_download_link(df)
 
     if nan_count > 0:
-        show_missing_values(df, output_col, zip_col)
+        show_missing_values(df, priority_columns)
 
 
 if __name__ == "__main__":
