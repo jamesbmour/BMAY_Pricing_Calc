@@ -8,6 +8,7 @@ from typing import Tuple, Optional
 # Constants
 EARTH_RADIUS_MILES = 3956
 DISTANCE_COL_NAME = "Distance"
+ZONE_COL_NAME = "Zone"
 
 
 class GeoLocator:
@@ -29,6 +30,51 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlon = lon2 - lon1
     a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
     return 2 * EARTH_RADIUS_MILES * np.arcsin(np.sqrt(a))
+
+
+def assign_zone(distance: float, zip_code: str, geo_locator: GeoLocator) -> str:
+    """
+    Assign a zone based on the distance and special cases for Canada and Hawaii.
+
+    The function first checks if the postal info indicates the location is in Hawaii
+    (by state_code 'HI') or if the zip code format suggests a Canadian postal code.
+    Otherwise, the zone is assigned based on the distance ranges.
+    """
+    # Clean the zip code (only consider first 5 digits for US codes)
+    clean_zip = str(zip_code).split("-")[0].strip()
+    # Retrieve postal info for special cases
+    postal_info = geo_locator.nomi.query_postal_code(clean_zip)
+
+    # Special case: Hawaii (check if state_code equals 'HI')
+    if pd.notna(postal_info.state_code) and postal_info.state_code == "HI":
+        return "Hawaii (Oahu island only)"
+
+    # Special case: Canada (naively, if the zip code is not numeric, assume Canadian)
+    if not clean_zip.isdigit() and len(clean_zip) >= 3:
+        return "Canada"
+
+    if pd.isna(distance):
+        return np.nan
+
+    # Assign zone based on distance ranges
+    if 0 <= distance <= 100:
+        return "Zone 1"
+    elif 101 <= distance <= 200:
+        return "Zone 2"
+    elif 201 <= distance <= 400:
+        return "Zone 3"
+    elif 401 <= distance <= 600:
+        return "Zone 4"
+    elif 601 <= distance <= 1000:
+        return "Zone 5"
+    elif 1001 <= distance <= 1400:
+        return "Zone 6"
+    elif 1401 <= distance <= 1800:
+        return "Zone 7"
+    elif 1801 <= distance <= 2500:
+        return "Zone 8"
+    else:
+        return np.nan
 
 
 def get_sidebar_inputs() -> Tuple[str, Optional[io.BytesIO]]:
@@ -55,11 +101,9 @@ def select_columns(df: pd.DataFrame) -> Tuple[str, str]:
         df.columns,
         index=list(df.columns).index(default_zip),
     )
-
     output_cols = list(df.columns)
     if DISTANCE_COL_NAME not in output_cols:
         output_cols.append(DISTANCE_COL_NAME)
-
     return (
         zip_col,
         st.sidebar.selectbox(
@@ -125,9 +169,19 @@ st.title("Zip Code Distance Calculator")
 st.write(
     """
     Upload an Excel file containing zip codes. The app will calculate distances
-    from each zip code to the origin zip code you specify. Results can be downloaded
-    as an Excel file.
-"""
+    from each zip code to the origin zip code you specify and assign a zone based on:
+
+    - Zone 1 (0-100 miles): $249.04  
+    - Zone 2 (101-200 miles): $298.70  
+    - Zone 3 (201-400 miles): $379.34  
+    - Zone 4 (401-600 miles): $439.51  
+    - Zone 5 (601-1000 miles): $497.19  
+    - Zone 6 (1001-1400 miles): $583.61  
+    - Zone 7 (1401-1800 miles): $672.34  
+    - Zone 8 (1801-2500 miles): $697.09  
+    - Canada: $810.00  
+    - Hawaii (Oahu island only): $750.00
+    """
 )
 
 
@@ -158,6 +212,13 @@ def main():
     df = calculate_distances(
         df, zip_col, output_col, origin_lat, origin_lon, geo_locator
     )
+
+    # Assign zones based on the calculated distance and zip code information.
+    df[ZONE_COL_NAME] = df.apply(
+        lambda row: assign_zone(row[output_col], row[zip_col], geo_locator),
+        axis=1,
+    )
+
     nan_count = display_results(df, output_col)
     create_download_link(df)
 
