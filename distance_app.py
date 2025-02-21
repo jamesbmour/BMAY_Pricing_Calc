@@ -160,10 +160,26 @@ def get_sidebar_inputs() -> Tuple[str, Optional[io.BytesIO]]:
 
 
 def read_excel_data(file: io.BytesIO) -> pd.DataFrame:
-    """Read and clean Excel data."""
+    """Read and clean Excel data with proper data type handling."""
+    # Read Excel file
     df = pd.read_excel(file)
-    df.replace(r"^\s*$", np.nan, regex=True, inplace=True)
-    return df.dropna(how="all")
+
+    # Convert empty strings to NaN more safely
+    df = df.replace(r"^\s*$", pd.NA, regex=True)
+
+    # Ensure zip codes are treated as strings
+    if "Zip" in df.columns:
+        df["Zip"] = df["Zip"].astype(str)
+
+    # Handle any text columns properly
+    text_columns = df.select_dtypes(include=["object"]).columns
+    for col in text_columns:
+        df[col] = df[col].astype(str)
+
+    # Drop rows that are completely empty
+    df = df.dropna(how="all")
+
+    return df
 
 
 def select_columns(df: pd.DataFrame) -> Tuple[str, str]:
