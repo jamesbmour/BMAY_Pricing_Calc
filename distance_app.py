@@ -133,10 +133,19 @@ def calculate_distances(
     return df
 
 
-def display_results(df: pd.DataFrame, output_col: str) -> int:
-    """Display results and return count of missing values."""
+def display_results(df: pd.DataFrame, output_col: str, zip_col: str) -> int:
+    """
+    Display results with the zip code, distance, and zone columns first.
+    Return the number of missing values in the output column.
+    """
+    # Reorder columns: zip_col, output_col (distance), ZONE_COL_NAME first.
+    cols_order = [zip_col, output_col, ZONE_COL_NAME] + [
+        col for col in df.columns if col not in {zip_col, output_col, ZONE_COL_NAME}
+    ]
+    df = df[cols_order]
+
     nan_count = df[output_col].isna().sum()
-    st.write(f"Number of NaN values in '{output_col}' column: {nan_count}")
+    st.write(f"Number of NaN values in `{output_col}` column: {nan_count}")
     st.dataframe(df)
     return nan_count
 
@@ -219,7 +228,8 @@ def main():
         axis=1,
     )
 
-    nan_count = display_results(df, output_col)
+    # Pass zip_col to display_results so that it can update the column order.
+    nan_count = display_results(df, output_col, zip_col)
     create_download_link(df)
 
     if nan_count > 0:
