@@ -47,7 +47,7 @@ INSTALL_TYPES_WITH_ZONE_COSTS = [
     "HubReinstall",
 ]
 
-# Define base costs for other install types
+# Define base costs for other install types (default values)
 BASE_COSTS = {
     "CoreDownsize": 150.00,
     "CorePermanent Removal": 100.00,
@@ -70,26 +70,49 @@ BASE_COSTS = {
 }
 
 
-def calculate_cost(zone: int, install_type: str) -> float:
+def calculate_cost(zone: int, install_type: str, base_costs: dict) -> float:
     """
     Calculate the cost based on the zone and install type.
 
     Args:
-        zone: numeric zone value
-        install_type: type of installation
+        zone: Numeric zone value.
+        install_type: Type of installation.
+        base_costs: Dictionary of base costs.
 
     Returns:
-        float: calculated cost
+        Calculated cost as a float.
     """
     if pd.isna(zone):
         return 0.0
 
-    # If install type is in the list that should have zone costs
+    # For install types that should use zone-based pricing.
     if install_type in INSTALL_TYPES_WITH_ZONE_COSTS:
         return ZONE_RATES.get(zone, 0.0)
 
-    # Otherwise, return the base cost for the install type
-    return BASE_COSTS.get(install_type, 0.0)
+    # Otherwise, return the base cost for the install type.
+    return base_costs.get(install_type, 0.0)
+
+
+def get_base_costs() -> dict:
+    """
+    Display number inputs in the sidebar to allow user customization
+    of base costs. Default values are taken from the BASE_COSTS dict.
+    The inputs are arranged in two columns.
+
+    Returns:
+        A dictionary of updated base costs.
+    """
+    st.sidebar.markdown("### Customize Base Costs")
+    updated_costs = {}
+    # Create two columns within the sidebar
+    cols = st.sidebar.columns(2)
+    # Iterate over the BASE_COSTS items, alternating between columns.
+    for i, (install_type, default_cost) in enumerate(BASE_COSTS.items()):
+        col = cols[i % 2]
+        updated_costs[install_type] = col.number_input(
+            f"{install_type}", value=default_cost, step=1.0, format="%.2f"
+        )
+    return updated_costs
 
 
 class GeoLocator:
@@ -118,18 +141,18 @@ def assign_zone(distance: float, zip_code: str, geo_locator: GeoLocator) -> int:
     clean_zip = str(zip_code).split("-")[0].strip()
     postal_info = geo_locator.nomi.query_postal_code(clean_zip)
 
-    # Special case: Hawaii
+    # Special case: Hawaii.
     if pd.notna(postal_info.state_code) and postal_info.state_code == "HI":
         return 10
 
-    # Special case: Canada
+    # Special case: Canada.
     if not clean_zip.isdigit() and len(clean_zip) >= 3:
         return 9
 
     if pd.isna(distance):
         return np.nan
 
-    # Assign numeric zone based on distance ranges
+    # Assign zone based on distance ranges.
     if 0 <= distance <= 100:
         return 1
     elif 101 <= distance <= 200:
@@ -161,25 +184,13 @@ def get_sidebar_inputs() -> Tuple[str, Optional[io.BytesIO]]:
 
 def read_excel_data(file: io.BytesIO) -> pd.DataFrame:
     """Read and clean Excel data with proper data type handling."""
-    # Read Excel file
     df = pd.read_excel(file)
-
-    # Convert empty strings to NaN more safely
     df = df.replace(r"^\s*$", pd.NA, regex=True)
-
-    # Ensure zip codes are treated as strings
     if "Zip" in df.columns:
         df["Zip"] = df["Zip"].astype(str)
-
-    # Handle any text columns properly
-    text_columns = df.select_dtypes(include=["object"]).columns
-    for col in text_columns:
+    for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].astype(str)
-
-    # Drop rows that are completely empty
-    df = df.dropna(how="all")
-
-    return df
+    return df.dropna(how="all")
 
 
 def select_columns(df: pd.DataFrame) -> Tuple[str, str]:
@@ -190,11 +201,9 @@ def select_columns(df: pd.DataFrame) -> Tuple[str, str]:
         df.columns,
         index=list(df.columns).index(default_zip),
     )
-
     output_cols = list(df.columns)
     if DISTANCE_COL_NAME not in output_cols:
         output_cols.append(DISTANCE_COL_NAME)
-
     return (
         zip_col,
         st.sidebar.selectbox(
@@ -228,9 +237,7 @@ def display_results(df: pd.DataFrame, priority_columns: list) -> int:
     """Display results with specified columns first."""
     valid_priority_cols = [col for col in priority_columns if col in df.columns]
     remaining_cols = [col for col in df.columns if col not in valid_priority_cols]
-    ordered_cols = valid_priority_cols + remaining_cols
-    df_display = df[ordered_cols]
-
+    df_display = df[valid_priority_cols + remaining_cols]
     nan_count = df[DISTANCE_COL_NAME].isna().sum()
     st.write(f"Number of NaN values in '{DISTANCE_COL_NAME}' column: {nan_count}")
     st.dataframe(df_display)
@@ -286,6 +293,7 @@ def main():
     """Main application logic."""
     origin_zip, uploaded_file = get_sidebar_inputs()
     geo_locator = GeoLocator()
+    base_costs = get_base_costs()  # Get updated base costs from user input
 
     if not uploaded_file:
         return
@@ -315,16 +323,15 @@ def main():
         lambda row: assign_zone(row[output_col], row[zip_col], geo_locator), axis=1
     )
 
-    # Calculate the total cost based on the zone and install type
+    # Calculate the total cost based on the zone and install type using user-defined base costs
     df["Total Cost"] = df.apply(
-        lambda row: calculate_cost(row[ZONE_COL_NAME], row["Install Type"]), axis=1
+        lambda row: calculate_cost(row[ZONE_COL_NAME], row["Install Type"], base_costs),
+        axis=1,
     )
 
-    # Display total cost summary
     total_cost = df["Total Cost"].sum()
     st.write(f"Total Cost: ${total_cost:,.2f}")
 
-    # Display detailed breakdown by zone and install type
     st.write("### Cost Breakdown by Zone and Install Type")
     zone_summary = (
         df.groupby([ZONE_COL_NAME, "Install Type"])
@@ -335,7 +342,6 @@ def main():
     zone_summary["Zone Description"] = zone_summary["Zone"].map(ZONE_MAPPING)
     st.dataframe(zone_summary)
 
-    # Additional summary by Install Type
     st.write("### Summary by Install Type")
     install_summary = (
         df.groupby("Install Type").agg({"Total Cost": ["count", "sum"]}).reset_index()
@@ -343,7 +349,6 @@ def main():
     install_summary.columns = ["Install Type", "Count", "Total Cost"]
     st.dataframe(install_summary)
 
-    # Define priority columns for display
     priority_columns = [
         zip_col,
         DISTANCE_COL_NAME,
@@ -351,8 +356,6 @@ def main():
         "Install Type",
         "Total Cost",
     ]
-
-    # Display results with priority columns
     nan_count = display_results(df, priority_columns)
     create_download_link(df)
 
