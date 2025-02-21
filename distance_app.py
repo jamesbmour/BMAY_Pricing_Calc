@@ -38,10 +38,58 @@ ZONE_MAPPING = {
     10: "Hawaii (Oahu island only)",
 }
 
+# Define Install Types that should have zone costs applied
+INSTALL_TYPES_WITH_ZONE_COSTS = [
+    "CoreNew Install",
+    "HubPremier New Install",
+    "DobbyLockersPremier New Install",
+    "CoreReinstall",
+    "HubReinstall",
+]
 
-def calculate_cost(zone: int) -> float:
-    """Calculate the cost based on the numeric zone."""
-    return ZONE_RATES.get(zone, 0.0)
+# Define base costs for other install types
+BASE_COSTS = {
+    "CoreDownsize": 150.00,
+    "CorePermanent Removal": 100.00,
+    "CoreSwap": 200.00,
+    "CoreTemporary Removal": 75.00,
+    "HubSwap": 200.00,
+    "CoreSvc Call": 125.00,
+    "CoreUpsize": 150.00,
+    "CorePermanent Relocation": 200.00,
+    "HubUpsize": 150.00,
+    "HubPermanent Removal": 100.00,
+    "DobbyLockersTemporary Removal": 75.00,
+    "HubDownsize": 150.00,
+    "HubPermanent Relocation": 200.00,
+    "HubMaintenance": 100.00,
+    "HubTemporary Removal": 75.00,
+    "DobbyLockersUpsize": 150.00,
+    "HubSvc Call": 125.00,
+    " ": 0.00,
+}
+
+
+def calculate_cost(zone: int, install_type: str) -> float:
+    """
+    Calculate the cost based on the zone and install type.
+
+    Args:
+        zone: numeric zone value
+        install_type: type of installation
+
+    Returns:
+        float: calculated cost
+    """
+    if pd.isna(zone):
+        return 0.0
+
+    # If install type is in the list that should have zone costs
+    if install_type in INSTALL_TYPES_WITH_ZONE_COSTS:
+        return ZONE_RATES.get(zone, 0.0)
+
+    # Otherwise, return the base cost for the install type
+    return BASE_COSTS.get(install_type, 0.0)
 
 
 class GeoLocator:
@@ -161,23 +209,9 @@ def calculate_distances(
 
 
 def display_results(df: pd.DataFrame, priority_columns: list) -> int:
-    """
-    Display results with specified columns first, followed by remaining columns.
-
-    Args:
-        df: DataFrame to display
-        priority_columns: List of column names that should appear first
-
-    Returns:
-        int: Count of NaN values in the Distance column
-    """
-    # Validate priority columns exist in DataFrame
+    """Display results with specified columns first."""
     valid_priority_cols = [col for col in priority_columns if col in df.columns]
-
-    # Get remaining columns that aren't in priority list
     remaining_cols = [col for col in df.columns if col not in valid_priority_cols]
-
-    # Reorder columns with priority columns first
     ordered_cols = valid_priority_cols + remaining_cols
     df_display = df[ordered_cols]
 
@@ -201,13 +235,7 @@ def create_download_link(df: pd.DataFrame) -> None:
 
 
 def show_missing_values(df: pd.DataFrame, priority_columns: list) -> None:
-    """
-    Display rows with missing distance values.
-
-    Args:
-        df: DataFrame to display
-        priority_columns: List of column names that should appear first
-    """
+    """Display rows with missing distance values."""
     nan_df = df[df[DISTANCE_COL_NAME].isna()]
     if not nan_df.empty:
         st.warning("The following rows have missing (NaN) distance values:")
@@ -271,29 +299,41 @@ def main():
         lambda row: assign_zone(row[output_col], row[zip_col], geo_locator), axis=1
     )
 
-    # Calculate the total cost based on the zone
-    df["Total Cost"] = df[ZONE_COL_NAME].apply(calculate_cost)
+    # Calculate the total cost based on the zone and install type
+    df["Total Cost"] = df.apply(
+        lambda row: calculate_cost(row[ZONE_COL_NAME], row["Install Type"]), axis=1
+    )
 
     # Display total cost summary
     total_cost = df["Total Cost"].sum()
     st.write(f"Total Cost: ${total_cost:,.2f}")
 
-    # Display detailed breakdown by zone
-    st.write("### Cost Breakdown by Zone")
+    # Display detailed breakdown by zone and install type
+    st.write("### Cost Breakdown by Zone and Install Type")
     zone_summary = (
-        df.groupby(ZONE_COL_NAME).agg({"Total Cost": ["count", "sum"]}).reset_index()
+        df.groupby([ZONE_COL_NAME, "Install Type"])
+        .agg({"Total Cost": ["count", "sum"]})
+        .reset_index()
     )
-    zone_summary.columns = ["Zone", "Count", "Total Cost"]
+    zone_summary.columns = ["Zone", "Install Type", "Count", "Total Cost"]
     zone_summary["Zone Description"] = zone_summary["Zone"].map(ZONE_MAPPING)
     st.dataframe(zone_summary)
+
+    # Additional summary by Install Type
+    st.write("### Summary by Install Type")
+    install_summary = (
+        df.groupby("Install Type").agg({"Total Cost": ["count", "sum"]}).reset_index()
+    )
+    install_summary.columns = ["Install Type", "Count", "Total Cost"]
+    st.dataframe(install_summary)
 
     # Define priority columns for display
     priority_columns = [
         zip_col,
         DISTANCE_COL_NAME,
         ZONE_COL_NAME,
+        "Install Type",
         "Total Cost",
-        "Install Type",  # Add any other columns you want to appear first
     ]
 
     # Display results with priority columns
